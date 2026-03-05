@@ -10,6 +10,10 @@ import {MainnetContracts} from "../../script/Contracts.sol";
 import {MainnetActors} from "../../script/Actors.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
+interface IynEigenViewer {
+    function getRate() external view returns (uint256);
+}
+
 contract CompoundIntegrationTest is BaseIntegrationTest {
 
     // ============================================
@@ -22,13 +26,12 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         assertEq(autoPounder.oeth(), OETH);
         assertEq(address(autoPounder.woeth()), WOETH);
         assertEq(address(autoPounder.oethVault()), OETH_VAULT);
-        assertEq(address(autoPounder.depositAdapter()), DEPOSIT_ADAPTER);
-        assertEq(autoPounder.recipient(), admin);
+        assertEq(address(autoPounder.redemptionAssetsVault()), REDEMPTION_ASSETS_VAULT);
         assertEq(autoPounder.getRewardTokenCount(), 4);
     }
 
     function test_StakingNodesClaimerSet() public view {
-        address[] memory nodes = MainnetContracts.getStakingNodes();
+        address[] memory nodes = _getStakingNodes();
         IRewardsCoordinator rc = IRewardsCoordinator(REWARDS_COORDINATOR);
 
         for (uint256 i = 0; i < nodes.length; i++) {
@@ -47,8 +50,6 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         deal(USDC, address(autoPounder), 500e6);
         deal(WETH, address(autoPounder), 1e16); // 0.01 ETH
 
-        uint256 initialYnLSDeBalance = IERC20(MainnetContracts.YN_LSDE).balanceOf(admin);
-
         console.log("EIGEN balance:", IERC20(EIGEN).balanceOf(address(autoPounder)));
         console.log("USDC balance:", IERC20(USDC).balanceOf(address(autoPounder)));
         console.log("WETH balance:", IERC20(WETH).balanceOf(address(autoPounder)));
@@ -57,34 +58,48 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
+        vm.prank(compounder);
         autoPounder.compound(emptyClaims, false, 0);
 
         // Verify tokens were swapped — AutoPounder should have minimal residual
         assertEq(IERC20(EIGEN).balanceOf(address(autoPounder)), 0, "EIGEN should be swapped");
         assertEq(IERC20(USDC).balanceOf(address(autoPounder)), 0, "USDC should be swapped");
         assertEq(IERC20(WETH).balanceOf(address(autoPounder)), 0, "WETH should be used");
+    }
 
-        // Verify ynLSDe shares were received
-        uint256 finalYnLSDeBalance = IERC20(MainnetContracts.YN_LSDE).balanceOf(admin);
-        assertGt(finalYnLSDeBalance, initialYnLSDeBalance, "Should have received ynLSDe shares");
+    function test_CompoundIncreasesYnLSDeRate() public {
+        deal(WETH, address(autoPounder), 10e18);
 
-        console.log("ynLSDe shares gained:", finalYnLSDeBalance - initialYnLSDeBalance);
+        // Get rate before
+        // ynEigenViewer is deployed alongside ynLSDe
+        // For fork tests, we read the rate from the viewer
+        uint256 totalAssetsBefore = _getYnLSDeTotalAssets();
+
+        IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
+            new IRewardsCoordinator.RewardsMerkleClaim[](0);
+
+        vm.prank(compounder);
+        autoPounder.compound(emptyClaims, false, 0);
+
+        uint256 totalAssetsAfter = _getYnLSDeTotalAssets();
+        assertGt(totalAssetsAfter, totalAssetsBefore, "totalAssets should increase after donation");
     }
 
     function test_CompoundWethOnly() public {
         deal(WETH, address(autoPounder), 1e18);
 
-        uint256 initialYnLSDeBalance = IERC20(MainnetContracts.YN_LSDE).balanceOf(admin);
+        uint256 totalAssetsBefore = _getYnLSDeTotalAssets();
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
+        vm.prank(compounder);
         autoPounder.compound(emptyClaims, false, 0);
 
         assertEq(IERC20(WETH).balanceOf(address(autoPounder)), 0, "WETH should be used");
 
-        uint256 finalYnLSDeBalance = IERC20(MainnetContracts.YN_LSDE).balanceOf(admin);
-        assertGt(finalYnLSDeBalance, initialYnLSDeBalance, "Should have received ynLSDe shares");
+        uint256 totalAssetsAfter = _getYnLSDeTotalAssets();
+        assertGt(totalAssetsAfter, totalAssetsBefore, "totalAssets should increase");
     }
 
     function test_CompoundNoTokens() public {
@@ -92,6 +107,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
         // Should not revert even with zero balances
+        vm.prank(compounder);
         autoPounder.compound(emptyClaims, false, 0);
     }
 
@@ -102,12 +118,14 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
         // Should revert when minWethOutput exceeds actual WETH
+        vm.prank(compounder);
         vm.expectRevert(
             abi.encodeWithSelector(CAPAutoPounder.SlippageExceeded.selector, 1e18, 2e18)
         );
         autoPounder.compound(emptyClaims, false, 2e18);
 
         // Should succeed when minWethOutput is met
+        vm.prank(compounder);
         autoPounder.compound(emptyClaims, false, 1e18);
     }
 
@@ -115,46 +133,39 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
     // Permissioning Tests
     // ============================================
 
-    function test_CompoundPermissionless() public {
-        address randomUser = makeAddr("randomUser");
-        bytes32 compounderRole = autoPounder.COMPOUNDER_ROLE();
-
-        assertEq(autoPounder.getRoleMemberCount(compounderRole), 0);
-
-        IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
-            new IRewardsCoordinator.RewardsMerkleClaim[](0);
-
-        vm.prank(randomUser);
-        autoPounder.compound(emptyClaims, false, 0);
-    }
-
     function test_CompoundRequiresRole() public {
-        address compounder = makeAddr("compounder");
         address nonCompounder = makeAddr("nonCompounder");
 
-        vm.prank(admin);
-        autoPounder.grantRole(autoPounder.COMPOUNDER_ROLE(), compounder);
-
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
+        // Non-compounder should be rejected
         vm.prank(nonCompounder);
-        vm.expectRevert(CAPAutoPounder.Unauthorized.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector,
+                nonCompounder,
+                autoPounder.COMPOUNDER_ROLE()
+            )
+        );
         autoPounder.compound(emptyClaims, false, 0);
 
+        // Compounder should succeed
         vm.prank(compounder);
         autoPounder.compound(emptyClaims, false, 0);
     }
 
     function test_RealizeInterestRequiresRole() public {
-        address compounder = makeAddr("compounder");
         address nonCompounder = makeAddr("nonCompounder");
 
-        vm.prank(admin);
-        autoPounder.grantRole(autoPounder.COMPOUNDER_ROLE(), compounder);
-
         vm.prank(nonCompounder);
-        vm.expectRevert(CAPAutoPounder.Unauthorized.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector,
+                nonCompounder,
+                autoPounder.COMPOUNDER_ROLE()
+            )
+        );
         autoPounder.realizeInterest();
 
         vm.prank(compounder);
@@ -162,17 +173,19 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
     }
 
     function test_ClaimOnlyRequiresRole() public {
-        address compounder = makeAddr("compounder");
         address nonCompounder = makeAddr("nonCompounder");
-
-        vm.prank(admin);
-        autoPounder.grantRole(autoPounder.COMPOUNDER_ROLE(), compounder);
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
         vm.prank(nonCompounder);
-        vm.expectRevert(CAPAutoPounder.Unauthorized.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector,
+                nonCompounder,
+                autoPounder.COMPOUNDER_ROLE()
+            )
+        );
         autoPounder.claimOnly(emptyClaims);
 
         vm.prank(compounder);
@@ -199,8 +212,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             oeth: OETH,
             woeth: WOETH,
             oethVault: OETH_VAULT,
-            depositAdapter: DEPOSIT_ADAPTER,
-            recipient: admin,
+            redemptionAssetsVault: REDEMPTION_ASSETS_VAULT,
             rewardTokens: tokens,
             swapPoolFees: fees
         });
@@ -222,8 +234,6 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         uint24[] memory fees = new uint24[](1);
         fees[0] = MainnetContracts.FEE_MEDIUM;
 
-        address newRecipient = makeAddr("newRecipient");
-
         CAPAutoPounder.Config memory config = CAPAutoPounder.Config({
             rewardsCoordinator: REWARDS_COORDINATOR,
             capInterestContract: CAP_INTEREST_CONTRACT,
@@ -234,8 +244,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             oeth: OETH,
             woeth: WOETH,
             oethVault: OETH_VAULT,
-            depositAdapter: DEPOSIT_ADAPTER,
-            recipient: newRecipient,
+            redemptionAssetsVault: REDEMPTION_ASSETS_VAULT,
             rewardTokens: tokens,
             swapPoolFees: fees
         });
@@ -243,7 +252,6 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         vm.prank(admin);
         autoPounder.updateConfig(config);
 
-        assertEq(autoPounder.recipient(), newRecipient);
         assertEq(autoPounder.getRewardTokenCount(), 1);
     }
 
@@ -276,6 +284,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
     function test_RealizeInterest() public {
         // Should not revert even if the CAP call fails
+        vm.prank(compounder);
         autoPounder.realizeInterest();
     }
 
@@ -283,6 +292,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
+        vm.prank(compounder);
         autoPounder.claimOnly(emptyClaims);
     }
 
@@ -304,8 +314,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             oeth: OETH,
             woeth: WOETH,
             oethVault: OETH_VAULT,
-            depositAdapter: DEPOSIT_ADAPTER,
-            recipient: admin,
+            redemptionAssetsVault: REDEMPTION_ASSETS_VAULT,
             rewardTokens: tokens,
             swapPoolFees: fees
         });
@@ -331,13 +340,22 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             oeth: OETH,
             woeth: WOETH,
             oethVault: OETH_VAULT,
-            depositAdapter: DEPOSIT_ADAPTER,
-            recipient: admin,
+            redemptionAssetsVault: REDEMPTION_ASSETS_VAULT,
             rewardTokens: tokens,
             swapPoolFees: fees
         });
 
         vm.expectRevert(CAPAutoPounder.ArrayLengthMismatch.selector);
         new CAPAutoPounder(config, admin);
+    }
+
+    // ============================================
+    // Helpers
+    // ============================================
+
+    function _getYnLSDeTotalAssets() internal view returns (uint256) {
+        (bool success, bytes memory data) = YN_LSDE.staticcall(abi.encodeWithSignature("totalAssets()"));
+        require(success, "totalAssets call failed");
+        return abi.decode(data, (uint256));
     }
 }
