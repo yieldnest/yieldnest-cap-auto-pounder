@@ -8,7 +8,6 @@ import {MainnetActors} from "../../script/Actors.sol";
 import {IRewardsCoordinator} from "../../src/interfaces/IRewardsCoordinator.sol";
 
 interface ITokenStakingNode {
-    function setClaimer(address claimer) external;
     function delegatedTo() external view returns (address);
     function nodeId() external view returns (uint256);
 }
@@ -76,8 +75,9 @@ contract BaseIntegrationTest is Test {
         autoPounder = new CAPAutoPounder(config, admin);
 
         // Grant COMPOUNDER_ROLE to our test compounder
+        bytes32 compounderRole = autoPounder.COMPOUNDER_ROLE();
         vm.prank(admin);
-        autoPounder.grantRole(autoPounder.COMPOUNDER_ROLE(), compounder);
+        autoPounder.grantRole(compounderRole, compounder);
 
         // In production: setClaimer(address(autoPounder)) must be called
         // on each staking node by the DELEGATOR role holder.
@@ -91,17 +91,14 @@ contract BaseIntegrationTest is Test {
 
     function _setClaimerForAllNodes() internal {
         address[] memory nodes = _getStakingNodes();
+        IRewardsCoordinator rc = IRewardsCoordinator(REWARDS_COORDINATOR);
 
         for (uint256 i = 0; i < nodes.length; i++) {
-            // The setClaimer function requires onlyDelegator.
-            // In the fork test, we impersonate the YN_DEV address.
-            vm.prank(MainnetActors.YN_DEV);
-            try ITokenStakingNode(nodes[i]).setClaimer(address(autoPounder)) {}
-            catch {
-                // If YN_DEV doesn't have the role, try ADMIN
-                vm.prank(MainnetActors.ADMIN);
-                ITokenStakingNode(nodes[i]).setClaimer(address(autoPounder));
-            }
+            // In fork tests, we prank as the staking node itself and call
+            // setClaimerFor() directly on the RewardsCoordinator.
+            // This bypasses the node's role check (which requires DELEGATOR role).
+            vm.prank(nodes[i]);
+            rc.setClaimerFor(address(autoPounder));
         }
     }
 }

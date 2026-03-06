@@ -135,19 +135,20 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
     function test_CompoundRequiresRole() public {
         address nonCompounder = makeAddr("nonCompounder");
+        bytes32 compounderRole = autoPounder.COMPOUNDER_ROLE();
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
         // Non-compounder should be rejected
-        vm.prank(nonCompounder);
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector,
                 nonCompounder,
-                autoPounder.COMPOUNDER_ROLE()
+                compounderRole
             )
         );
+        vm.prank(nonCompounder);
         autoPounder.compound(emptyClaims, false, 0);
 
         // Compounder should succeed
@@ -157,15 +158,16 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
     function test_RealizeInterestRequiresRole() public {
         address nonCompounder = makeAddr("nonCompounder");
+        bytes32 compounderRole = autoPounder.COMPOUNDER_ROLE();
 
-        vm.prank(nonCompounder);
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector,
                 nonCompounder,
-                autoPounder.COMPOUNDER_ROLE()
+                compounderRole
             )
         );
+        vm.prank(nonCompounder);
         autoPounder.realizeInterest();
 
         vm.prank(compounder);
@@ -174,18 +176,19 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
     function test_ClaimOnlyRequiresRole() public {
         address nonCompounder = makeAddr("nonCompounder");
+        bytes32 compounderRole = autoPounder.COMPOUNDER_ROLE();
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
 
-        vm.prank(nonCompounder);
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector,
                 nonCompounder,
-                autoPounder.COMPOUNDER_ROLE()
+                compounderRole
             )
         );
+        vm.prank(nonCompounder);
         autoPounder.claimOnly(emptyClaims);
 
         vm.prank(compounder);
@@ -198,6 +201,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
     function test_OnlyAdminCanUpdateConfig() public {
         address attacker = makeAddr("attacker");
+        bytes32 adminRole = autoPounder.DEFAULT_ADMIN_ROLE();
 
         address[] memory tokens = new address[](0);
         uint24[] memory fees = new uint24[](0);
@@ -217,14 +221,14 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             swapPoolFees: fees
         });
 
-        vm.prank(attacker);
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector,
                 attacker,
-                autoPounder.DEFAULT_ADMIN_ROLE()
+                adminRole
             )
         );
+        vm.prank(attacker);
         autoPounder.updateConfig(config);
     }
 

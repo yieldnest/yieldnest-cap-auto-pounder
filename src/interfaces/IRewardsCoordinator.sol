@@ -25,6 +25,7 @@ interface IRewardsCoordinator {
     }
 
     function processClaim(RewardsMerkleClaim calldata claim, address recipient) external;
+    function setClaimerFor(address claimer) external;
     function claimerFor(address earner) external view returns (address);
     function cumulativeClaimed(address earner, IERC20 token) external view returns (uint256);
 }
