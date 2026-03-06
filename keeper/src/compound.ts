@@ -22,11 +22,12 @@ import {
 } from "viem";
 import { mainnet } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
-import { ADDRESSES, KNOWN_TOKENS } from "./config.js";
+import { ADDRESSES, KNOWN_TOKENS, SWAP_FEES, SLIPPAGE_BPS } from "./config.js";
 import {
   tokenStakingNodesManagerAbi,
   rewardsCoordinatorAbi,
   autoPounderAbi,
+  quoterV2Abi,
 } from "./abi.js";
 import { getLifetimeRewards, getClaimProof, type ClaimProof } from "./sidecar.js";
 
@@ -117,11 +118,11 @@ async function main() {
 
   console.log(`\nBuilt ${claims.length} claim proofs`);
 
-  // 3. Estimate expected WETH output
-  // For safety, we use minWethOutput = 0 in initial version.
-  // TODO: Integrate price feeds for proper slippage calculation.
-  const minWethOutput = 0n;
-  console.log(`minWethOutput: ${formatEther(minWethOutput)} ETH`);
+  // 3. Estimate expected WETH output via Uniswap V3 QuoterV2
+  const expectedWeth = await quoteExpectedWethOutput(claims);
+  const minWethOutput = applySlippage(expectedWeth, SLIPPAGE_BPS);
+  console.log(`Expected WETH output: ${formatEther(expectedWeth)} ETH`);
+  console.log(`minWethOutput (${SLIPPAGE_BPS / 100}% slippage): ${formatEther(minWethOutput)} ETH`);
 
   if (dryRun) {
     console.log("\n--- DRY RUN — not sending transaction ---");
@@ -153,6 +154,87 @@ async function main() {
 
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   console.log(`Confirmed in block ${receipt.blockNumber} (gas: ${receipt.gasUsed})`);
+}
+
+/**
+ * Quote expected WETH output for all reward tokens in the claims.
+ * Uses Uniswap V3 QuoterV2 to simulate swaps with actual pool state.
+ * WETH rewards are counted directly (no swap needed).
+ */
+async function quoteExpectedWethOutput(claims: any[]): Promise<bigint> {
+  // Aggregate unclaimed amounts per token across all claims
+  const tokenAmounts: Record<string, bigint> = {};
+
+  for (const claim of claims) {
+    for (const leaf of claim.tokenLeaves) {
+      const token = (leaf.token as string).toLowerCase();
+      const amount = BigInt(leaf.cumulativeEarnings);
+
+      // Get already-claimed amount to find the delta
+      const claimed = await publicClient.readContract({
+        address: ADDRESSES.rewardsCoordinator,
+        abi: rewardsCoordinatorAbi,
+        functionName: "cumulativeClaimed",
+        args: [claim.earnerLeaf.earner as `0x${string}`, token as `0x${string}`],
+      });
+
+      const unclaimed = amount - claimed;
+      if (unclaimed > 0n) {
+        tokenAmounts[token] = (tokenAmounts[token] ?? 0n) + unclaimed;
+      }
+    }
+  }
+
+  let totalExpectedWeth = 0n;
+  const wethAddr = ADDRESSES.weth.toLowerCase();
+
+  for (const [token, amount] of Object.entries(tokenAmounts)) {
+    const symbol = KNOWN_TOKENS[token] ?? token;
+
+    // WETH doesn't need swapping
+    if (token === wethAddr) {
+      console.log(`  ${symbol}: ${formatEther(amount)} (direct, no swap)`);
+      totalExpectedWeth += amount;
+      continue;
+    }
+
+    const fee = SWAP_FEES[token];
+    if (!fee) {
+      console.log(`  ${symbol}: no swap path configured, skipping quote`);
+      continue;
+    }
+
+    try {
+      const { result } = await publicClient.simulateContract({
+        address: ADDRESSES.quoterV2,
+        abi: quoterV2Abi,
+        functionName: "quoteExactInputSingle",
+        args: [{
+          tokenIn: token as `0x${string}`,
+          tokenOut: ADDRESSES.weth,
+          amountIn: amount,
+          fee,
+          sqrtPriceLimitX96: 0n,
+        }],
+      });
+
+      const expectedOut = result[0];
+      console.log(`  ${symbol}: ${formatEther(amount)} → ${formatEther(expectedOut)} WETH`);
+      totalExpectedWeth += expectedOut;
+    } catch (err) {
+      console.error(`  ${symbol}: quote failed, excluding from minWethOutput`);
+    }
+  }
+
+  return totalExpectedWeth;
+}
+
+/**
+ * Apply slippage tolerance to expected output.
+ * slippageBps = 200 means 2% slippage → minOut = expected * 98%
+ */
+function applySlippage(amount: bigint, slippageBps: number): bigint {
+  return (amount * BigInt(10000 - slippageBps)) / 10000n;
 }
 
 /**

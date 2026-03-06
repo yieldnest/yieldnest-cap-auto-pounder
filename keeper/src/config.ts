@@ -10,6 +10,9 @@ export const ADDRESSES = {
   // TokenStakingNodesManager — staking nodes are read dynamically
   tokenStakingNodesManager: "0x6B566CB6cDdf7d140C59F84594756a151030a0C3" as const,
 
+  // Uniswap V3
+  quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e" as const,
+
   // Tokens
   weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const,
   eigen: "0xec53bF9167f50cDEB3Ae105f56099aaaB9061F83" as const,
@@ -17,6 +20,16 @@ export const ADDRESSES = {
   arpa: "0xBA50933C268F567BDC86E1aC131BE072C6B0b71a" as const,
   ezSkate: "0xC12E4D31e92ceDC1AD4c8c23DBcE2C5f7Cb52998" as const,
 } as const;
+
+// Uniswap V3 fee tiers per reward token (must match contract config)
+export const SWAP_FEES: Record<string, number> = {
+  [ADDRESSES.eigen.toLowerCase()]: 3000,   // 0.3%
+  [ADDRESSES.usdc.toLowerCase()]: 500,     // 0.05%
+  [ADDRESSES.arpa.toLowerCase()]: 10000,   // 1%
+};
+
+// Default slippage tolerance for minWethOutput (2%)
+export const SLIPPAGE_BPS = Number(process.env.SLIPPAGE_BPS ?? "200");
 
 // Known reward tokens for logging purposes
 export const KNOWN_TOKENS: Record<string, string> = {
