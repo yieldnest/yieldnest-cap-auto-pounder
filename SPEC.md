@@ -10,21 +10,21 @@ Assigned by Dan Octavian. Reference implementation: [yieldnest-stakedao-auto-pou
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Core contract (`CAPAutoPounder.sol`) | DONE | Audited, all PR review comments addressed |
+| Core contract (`CAPAutoPounder.sol`) | DONE | All PR review comments addressed |
 | Interfaces | DONE | IRewardsCoordinator, ISwapRouter, IOETHVaultCore, IERC4626, ICAPInterest, IRedemptionAssetsVault |
 | Mainnet addresses (`Contracts.sol`) | DONE | Dynamic staking nodes, all tokens sourced from EigenLayer Sidecar API |
-| Actor addresses (`Actors.sol`) | DONE | YnSecurityCouncil, YnDev, StrategyController |
-| Fork integration tests | DONE | 18 tests passing — compound, permissions, admin, constructor, donation rate |
-| Off-chain keeper (`keeper/`) | DONE | Node.js/viem — check-rewards.ts + compound.ts with --dry-run |
+| Actor addresses (`Actors.sol`) | DONE | YnSecurityCouncil, YnDev, StrategyController, YnDelegator |
+| Fork integration tests | DONE | 18 tests passing |
+| Off-chain keeper (`keeper/`) | DONE | check-rewards.ts + compound.ts |
+| minWethOutput calculation | DONE | Uniswap V3 QuoterV2 + configurable slippage (default 2%) |
 | README documentation | DONE | Architecture, addresses, design decisions, audit history |
+| Security audit (skills) | TODO | Pashov, Trail of Bits, Cyfrin, scv-scan, Quill skills installed |
 | Deploy script (`Deploy.s.sol`) | TODO | Forge Script for deterministic deployment |
-| Deployer library | TODO | Reusable config builder (pattern from StakeDAO) |
-| Verifier script + library | TODO | Post-deploy config validation |
-| Constructor args helper | TODO | For Etherscan bytecode verification |
+| Verifier script | TODO | Post-deploy config validation |
 | CI workflow update | TODO | Current CI uses `ci` profile (missing), needs `mainnet` fork tests |
-| Deployment JSON artifact | TODO | `deployments/autoPounder-1.json` |
-| `setClaimer()` coordination | TODO | Requires DELEGATOR role — Safe transaction from YnSecurityCouncil |
+| `setClaimer()` coordination | TODO | Via YnDelegator Safe tx after deployment |
 | COMPOUNDER_ROLE grant | TODO | Grant to keeper wallet after deployment |
+| Keeper hosting | TODO | Digital Ocean cron job |
 
 ## Architecture
 
@@ -34,6 +34,11 @@ Assigned by Dan Octavian. Reference implementation: [yieldnest-stakedao-auto-pou
                     ┌─────────▼──────────┐
                     │  EigenLayer Sidecar │
                     │  (merkle proofs)    │
+                    └─────────┬──────────┘
+                              │
+                    ┌─────────▼──────────┐
+                    │  Uniswap V3        │
+                    │  QuoterV2          │ ← quotes expected WETH output
                     └─────────┬──────────┘
                               │
                     ┌─────────▼──────────┐
@@ -74,25 +79,35 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 ### Off-Chain Keeper: `keeper/`
 
 - `src/check-rewards.ts` — Read-only: queries unclaimed rewards across all nodes
-- `src/compound.ts` — Full flow: fetch proofs → build claims → send tx
+- `src/compound.ts` — Full flow: fetch proofs → quote output → build claims → send tx
+- **minWethOutput**: Uniswap V3 QuoterV2 quotes exact expected output per token, sums them, applies slippage tolerance (default 2%, configurable via `SLIPPAGE_BPS`)
 - Supports `--dry-run` and `--realize-interest` flags
 - EigenLayer Sidecar API for merkle proofs
 
 ### Tests: `test/mainnet/compound.spec.sol`
 
-18 fork tests covering:
-- Configuration validation
-- Claimer setup for all staking nodes
-- Compound with mixed tokens (EIGEN + USDC + WETH)
-- Compound WETH-only path
-- Compound with zero balances (no revert)
-- Slippage protection (minWethOutput enforcement)
-- ynLSDe totalAssets increases after donation
-- COMPOUNDER_ROLE enforcement on all 3 entry points
-- Admin config update (authorized + unauthorized)
-- Token recovery
-- CAP interest realization
-- Constructor validation (invalid admin, array mismatch)
+18 fork tests — all passing (`FOUNDRY_PROFILE=mainnet ETH_MAINNET_RPC_URL=<rpc> forge test -vv`):
+
+| Test | What It Covers |
+|------|---------------|
+| `test_Configuration` | All state variables match expected |
+| `test_StakingNodesClaimerSet` | All 5 nodes have autoPounder as claimer |
+| `test_ClaimAndSwap` | EIGEN + USDC + WETH → swap → donate |
+| `test_CompoundIncreasesYnLSDeRate` | totalAssets increases after donation |
+| `test_CompoundWethOnly` | WETH-only path works |
+| `test_CompoundNoTokens` | Zero balance doesn't revert |
+| `test_CompoundSlippageProtection` | minWethOutput reverts when not met |
+| `test_CompoundRequiresRole` | COMPOUNDER_ROLE enforced on compound() |
+| `test_RealizeInterestRequiresRole` | COMPOUNDER_ROLE enforced on realizeInterest() |
+| `test_ClaimOnlyRequiresRole` | COMPOUNDER_ROLE enforced on claimOnly() |
+| `test_OnlyAdminCanUpdateConfig` | Non-admin reverts |
+| `test_AdminCanUpdateConfig` | Config update succeeds + assertions |
+| `test_RecoverToken` | Token sweep works |
+| `test_RecoverTokenInvalidDestination` | address(0) reverts |
+| `test_RealizeInterest` | Doesn't revert on CAP call failure |
+| `test_ClaimOnly` | Empty claims works |
+| `test_ConstructorInvalidAdmin` | address(0) admin reverts |
+| `test_ConstructorArrayLengthMismatch` | Mismatched arrays revert |
 
 ## Reward Tokens
 
@@ -106,9 +121,17 @@ Sourced from EigenLayer Sidecar API across all 5 staking nodes:
 | ARPA | `0xBA50933C268F567BDC86E1aC131BE072C6B0b71a` | All 5 | ~44 | ~15 (node 1) |
 | ezSKATE | `0xC12E4D31e92ceDC1AD4c8c23DBcE2C5f7Cb52998` | Node 5 | ~0.807 | 0 |
 
-## What Needs To Be Built
+## What's Left
 
-### 1. Deploy Script (`script/Deploy.s.sol`)
+### 1. Security Audit (Next)
+
+Run installed skills against the contract:
+- `/solidity-auditor` (Pashov) — full security review
+- `scv-scan` — 36 vulnerability types
+- Trail of Bits skills — static analysis, sharp edges, second opinion
+- Quill plugins — reentrancy, external calls, arithmetic, state invariants
+
+### 2. Deploy Script (`script/Deploy.s.sol`)
 
 Following StakeDAO pattern:
 ```
@@ -116,48 +139,66 @@ script/
 ├── Deploy.s.sol              # forge script, saves deployment JSON
 ├── CAPAutoPounderDeployer.sol # Reusable config builder + deploy()
 ├── Verify.s.sol              # Post-deploy config validation
-├── CAPAutoPounderVerifier.sol # Reusable verification library
-├── ConstructorArgs.s.sol      # For Etherscan bytecode verification
 ├── Contracts.sol              # DONE
 └── Actors.sol                 # DONE
 ```
 
-### 2. CI Workflow Update
+### 3. CI Workflow Update
 
 Current `.github/workflows/test.yml` references `FOUNDRY_PROFILE: ci` which doesn't exist. Needs:
 - Fix profile to use `default` for unit tests
 - Add `mainnet` job for fork tests with `ETH_MAINNET_RPC_URL` secret
 - Add `forge fmt --check`
 
-### 3. Deployment Artifact
+### 4. Keeper Hosting
 
-Save to `deployments/autoPounder-1.json` with contract address, deployer, config, block number.
+Set up on Digital Ocean with cron job. Needs:
+- Node.js runtime with `keeper/` code
+- Funded wallet with COMPOUNDER_ROLE
+- `ETH_MAINNET_RPC_URL`, `PRIVATE_KEY`, `AUTO_POUNDER_ADDRESS` env vars
+- Cron schedule (e.g., weekly or when rewards exceed threshold)
 
 ## Deployment Checklist
 
-- [ ] **1. Build deploy scripts** — Deploy.s.sol, Deployer lib, Verifier lib
-- [ ] **2. Fix CI** — Update workflow to use correct profile, add fork test job
-- [ ] **3. Deploy to mainnet** — `forge script script/Deploy.s.sol --broadcast --verify`
-- [ ] **4. Verify deployment** — `forge script script/Verify.s.sol`
-- [ ] **5. setClaimer() on all 5 nodes** — Safe tx from YnSecurityCouncil (changes claimer from `0xaa6A...7593` to deployed contract)
-- [ ] **6. Grant COMPOUNDER_ROLE** — Admin grants to keeper wallet address
-- [ ] **7. Deploy keeper** — Set up cron/Gelato for periodic compounding
-- [ ] **8. First compound (dry-run)** — `npx tsx src/compound.ts --dry-run`
-- [ ] **9. First compound (live)** — Monitor tx, verify ynLSDe totalAssets increases
+- [ ] **1. Run security scans** — Pashov, scv-scan, TOB, Quill skills
+- [ ] **2. Build deploy scripts** — Deploy.s.sol, Verifier
+- [ ] **3. Fix CI** — Update workflow to use correct profile, add fork test job
+- [ ] **4. Get ETH for deployment** — Dan sends to Saurabh's deploy address
+- [ ] **5. Deploy to mainnet** — `forge script script/Deploy.s.sol --broadcast --verify`
+- [ ] **6. Verify deployment** — `forge script script/Verify.s.sol`
+- [ ] **7. setClaimer() on all 5 nodes** — YnDelegator (`0xDF51...28eF`) Safe tx
+- [ ] **8. Grant COMPOUNDER_ROLE** — Admin grants to keeper wallet
+- [ ] **9. Deploy keeper** — Digital Ocean cron job
+- [ ] **10. First compound (dry-run)** — `npx tsx src/compound.ts --dry-run`
+- [ ] **11. First compound (live)** — Monitor tx, verify ynLSDe totalAssets increases
 
-## Action Items for Team Discussion
+## Key Addresses
 
-1. **Who calls setClaimer?** — Requires DELEGATOR role on each staking node. Current claimer is EOA `0xaa6A4b49dc2E3fDee2d32d0B116b043067437593`. Need YnSecurityCouncil Safe transaction to change to deployed contract address.
+| Name | Address | Role |
+|------|---------|------|
+| YnSecurityCouncil | `0xfcad670592a3b24869C0b51a6c6FDED4F95D6975` | DEFAULT_ADMIN_ROLE |
+| YnDelegator | `0xDF51B7843817F76220C0970eF58Ba726630028eF` | TOKEN_STAKING_NODES_DELEGATOR_ROLE (setClaimer) |
+| Current Claimer (EOA) | `0xaa6A4b49dc2E3fDee2d32d0B116b043067437593` | To be replaced by contract |
+| RedemptionAssetsVault | `0x73bC33999C34a5126CA19dC900F22690C288D55e` | Donation target |
 
-2. **Keeper hosting** — Where to run the keeper? Options: cron on a server, Gelato Network, GitHub Actions. Needs a funded wallet with COMPOUNDER_ROLE.
+## Action Items
 
-3. **Confirm RedemptionAssetsVault donation mechanism** — Verified on-chain that `0x73bC...D55e` is permissionless and wOETH is supported. Should confirm with Dan/ynLSDe team that this is the intended donation path.
+**Saurabh:**
+- Run security audit skills against the contract (new Claude session)
+- Build deploy script
+- Set up keeper on Digital Ocean
+- Deploy to mainnet
 
-4. **ezSKATE swap path** — ezSKATE is earned by Node 5 but not currently in the reward tokens config (no known Uniswap pool). Need to research liquidity or exclude from auto-compounding.
+**Dan:**
+- Send ETH to Saurabh's deploy address
+- Submit setClaimer Safe tx via YnDelegator after deployment
+- Grant COMPOUNDER_ROLE to keeper wallet
 
-5. **minWethOutput calculation** — Currently keeper passes 0 in dry-run. Need to integrate price feeds (Chainlink/Uniswap TWAP) for production slippage calculation.
+## Open Questions
 
-6. **Deploy timing** — ~$8,600 in unclaimed rewards growing. Previous claims totaled ~$18K EIGEN across nodes 1-2.
+1. **ezSKATE swap path** — Node 5 earns ezSKATE but no known Uniswap pool. Exclude from auto-compounding? Sweep later via `recoverToken`?
+2. **Confirm RedemptionAssetsVault donation** — Verified on-chain, but worth confirming with Dan that this is the intended path.
+3. **Keeper frequency** — How often to compound? Weekly? Threshold-based?
 
 ## Audit History
 
@@ -171,9 +212,3 @@ Save to `deployments/autoPounder-1.json` with contract address, deployer, config
 | 6 | MEDIUM | WETH double-counting in swap loop | Fixed: returns balanceOf after all swaps |
 | 7 | MEDIUM | _realizeInterest swallowed failures | Fixed: CAPInterestRealizeFailed event |
 | 8 | MEDIUM | minOutputBps was dead code | Fixed: removed entirely |
-
-## Key Contacts
-
-- **Dan Octavian** — Task owner, YieldNest
-- **CAP Team** — For `realizeRestakerInterest` questions
-- **YN Admin (YnSecurityCouncil)** — For setClaimer() and role grants
