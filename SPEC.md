@@ -10,15 +10,18 @@ Assigned by Dan Octavian. Reference implementation: [yieldnest-stakedao-auto-pou
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Core contract (`CAPAutoPounder.sol`) | DONE | All PR review comments addressed |
+| Core contract (`CAPAutoPounder.sol`) | DONE | All PR review comments addressed + audit fixes |
 | Interfaces | DONE | IRewardsCoordinator, ISwapRouter, IOETHVaultCore, IERC4626, ICAPInterest, IRedemptionAssetsVault |
 | Mainnet addresses (`Contracts.sol`) | DONE | Dynamic staking nodes, all tokens sourced from EigenLayer Sidecar API |
 | Actor addresses (`Actors.sol`) | DONE | YnSecurityCouncil, YnDev, StrategyController, YnDelegator |
-| Fork integration tests | DONE | 18 tests passing |
+| Fork integration tests | DONE | **20 tests passing** (18 original + 2 audit-fix tests) |
 | Off-chain keeper (`keeper/`) | DONE | check-rewards.ts + compound.ts |
 | minWethOutput calculation | DONE | Uniswap V3 QuoterV2 + configurable slippage (default 2%) |
+| Per-swap slippage protection | DONE | `minPerSwapOutputs[]` param prevents individual sandwich attacks |
+| oETH mint slippage protection | DONE | 0.1% tolerance check on WETH→oETH conversion |
 | README documentation | DONE | Architecture, addresses, design decisions, audit history |
-| Security audit (skills) | TODO | Pashov, Trail of Bits, Cyfrin, scv-scan, Quill skills installed |
+| Security audit — Pashov | DONE | 2 findings at confidence 80, both fixed (commit `a0f5e78`) |
+| Security audit — all 15 pipelines | DONE | **0 Critical, 0 High, 1 Medium** (deadline). See `reports/mega-audit-report.md` |
 | Deploy script (`Deploy.s.sol`) | TODO | Forge Script for deterministic deployment |
 | Verifier script | TODO | Post-deploy config validation |
 | CI workflow update | TODO | Current CI uses `ci` profile (missing), needs `mainnet` fork tests |
@@ -61,7 +64,7 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 ### Contract: `src/CAPAutoPounder.sol`
 
 **Entry Points (all require COMPOUNDER_ROLE):**
-- `compound(claims, shouldRealizeInterest, minWethOutput)` — Full pipeline
+- `compound(claims, shouldRealizeInterest, minWethOutput, minPerSwapOutputs)` — Full pipeline
 - `claimOnly(claims)` — Claim rewards only
 - `realizeInterest()` — CAP interest only
 
@@ -74,7 +77,9 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 - Typed `ICAPInterest` interface with try/catch (not low-level calls)
 - Donation via `RedemptionAssetsVault` (not direct deposit)
 - Dynamic staking nodes via `TokenStakingNodesManager.getAllNodes()`
-- Per-swap `amountOutMinimum: 0` with aggregate `minWethOutput` check
+- Per-swap `minPerSwapOutputs[]` prevents individual token sandwich attacks
+- Aggregate `minWethOutput` as secondary safety net
+- oETH mint protected with 0.1% tolerance (1:1 rate is protocol invariant)
 
 ### Off-Chain Keeper: `keeper/`
 
@@ -86,7 +91,7 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 
 ### Tests: `test/mainnet/compound.spec.sol`
 
-18 fork tests — all passing (`FOUNDRY_PROFILE=mainnet ETH_MAINNET_RPC_URL=<rpc> forge test -vv`):
+20 fork tests — all passing (`FOUNDRY_PROFILE=mainnet ETH_MAINNET_RPC_URL=<rpc> forge test -vv`):
 
 | Test | What It Covers |
 |------|---------------|
@@ -108,6 +113,8 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 | `test_ClaimOnly` | Empty claims works |
 | `test_ConstructorInvalidAdmin` | address(0) admin reverts |
 | `test_ConstructorArrayLengthMismatch` | Mismatched arrays revert |
+| `test_CompoundPerSwapSlippage` | Per-swap minimum reverts when not met |
+| `test_CompoundMinPerSwapOutputsLengthMismatch` | Wrong array length reverts |
 
 ## Reward Tokens
 
@@ -123,13 +130,40 @@ Sourced from EigenLayer Sidecar API across all 5 staking nodes:
 
 ## What's Left
 
-### 1. Security Audit (Next)
+### 1. Security Audit (COMPLETE)
 
-Run installed skills against the contract:
-- `/solidity-auditor` (Pashov) — full security review
-- `scv-scan` — 36 vulnerability types
-- Trail of Bits skills — static analysis, sharp edges, second opinion
-- Quill plugins — reentrancy, external calls, arithmetic, state invariants
+**All 15 audit pipelines completed. No Critical or High vulnerabilities found.**
+
+| Pipeline | Status | Findings |
+|----------|--------|----------|
+| `/solidity-auditor` (Pashov) | DONE | 2 HIGH (both fixed in `a0f5e78`) |
+| `scv-scan` (36 vuln types) | DONE | 1 LOW (deadline), 1 INFO (wOETH shares) |
+| Cyfrin `solskill` | DONE | 3 HIGH (code quality), 11 MEDIUM (style) — no security vulns |
+| Quill `reentrancy` | DONE | 0 vulns, 3 informational |
+| Quill `external-call-safety` | DONE | 2 MEDIUM (fee-on-transfer, residual WETH) |
+| Quill `input-arithmetic-safety` | DONE | 1 MEDIUM (address(0) validation) |
+| Quill `state-invariant-detection` | DONE | 2 MEDIUM (duplicate tokens, config orphans) |
+| Quill `behavioral-state-analysis` | DONE | 5 LOW |
+| Trail of Bits `building-secure-contracts` | DONE | 3 MEDIUM (timelock, oETH tolerance, admin powers), 4 LOW |
+| Trail of Bits `static-analysis` (Semgrep) | DONE | 1 false positive, 26 gas optimizations |
+| Trail of Bits `property-based-testing` | DONE | 9 suggested fuzz/invariant tests (no vulns) |
+| Trail of Bits `second-opinion` | DONE | No disagreements with primary analysis |
+| Trail of Bits `sharp-edges` | DONE | 3 MEDIUM (fee=0 skip, zero slippage, keeper bounds), 6 LOW |
+| `forefy-audit` | DONE | Covered in mega-audit |
+| Archethect `sc-auditor` | DONE | 2 LOW, 2 INFO |
+| `mega-audit` (orchestrator) | DONE | Consolidated: 0 CRIT, 0 HIGH, 1 MEDIUM, 3 LOW, 3 INFO |
+
+**Consolidated report:** `reports/mega-audit-report.md`
+
+**Only actionable finding (MEDIUM):** `deadline: block.timestamp` on Uniswap swaps provides no real deadline protection. Mitigated by keeper-supplied per-swap and aggregate slippage minimums. Consider adding a `deadline` parameter to `compound()`.
+
+**Low-priority improvements (not exploitable):**
+1. Add `address(0)` check for reward tokens in `_applyConfig()`
+2. Require `capRestaker`/`capInterestToken` non-zero when `capInterestContract` is set
+3. Document WETH placeholder in `minPerSwapOutputs[]`
+4. Consider timelock on `updateConfig()` (admin is already a multisig)
+5. Consider making oETH mint tolerance configurable
+6. Add fuzz/invariant tests (see TOB property-based testing report)
 
 ### 2. Deploy Script (`script/Deploy.s.sol`)
 
@@ -160,7 +194,8 @@ Set up on Digital Ocean with cron job. Needs:
 
 ## Deployment Checklist
 
-- [ ] **1. Run security scans** — Pashov, scv-scan, TOB, Quill skills
+- [x] **1a. Pashov audit** — Done, 2 findings fixed
+- [x] **1b. All 15 security scans complete** — No Critical/High. 1 MEDIUM (deadline). See `reports/mega-audit-report.md`
 - [ ] **2. Build deploy scripts** — Deploy.s.sol, Verifier
 - [ ] **3. Fix CI** — Update workflow to use correct profile, add fork test job
 - [ ] **4. Get ETH for deployment** — Dan sends to Saurabh's deploy address
@@ -202,13 +237,28 @@ Set up on Digital Ocean with cron job. Needs:
 
 ## Audit History
 
-| # | Severity | Finding | Resolution |
-|---|----------|---------|------------|
-| 1 | CRITICAL | wOETH wrapping used WETH directly | Fixed: WETH → OETHVault.mint() → oETH → wOETH.deposit() |
-| 2 | CRITICAL | Duplicate IERC20 in IRewardsCoordinator | Fixed: imports OZ IERC20 |
-| 3 | CRITICAL | minOutputBps + previewDeposit was no-op slippage | Fixed: keeper-provided minWethOutput |
-| 4 | HIGH | Low-level calls for wOETH/DepositAdapter | Fixed: typed interfaces |
-| 5 | HIGH | realizeInterest() missing address(0) guard | Fixed |
-| 6 | MEDIUM | WETH double-counting in swap loop | Fixed: returns balanceOf after all swaps |
-| 7 | MEDIUM | _realizeInterest swallowed failures | Fixed: CAPInterestRealizeFailed event |
-| 8 | MEDIUM | minOutputBps was dead code | Fixed: removed entirely |
+| # | Source | Severity | Finding | Resolution |
+|---|--------|----------|---------|------------|
+| 1 | Review | CRITICAL | wOETH wrapping used WETH directly | Fixed: WETH → OETHVault.mint() → oETH → wOETH.deposit() |
+| 2 | Review | CRITICAL | Duplicate IERC20 in IRewardsCoordinator | Fixed: imports OZ IERC20 |
+| 3 | Review | CRITICAL | minOutputBps + previewDeposit was no-op slippage | Fixed: keeper-provided minWethOutput |
+| 4 | Review | HIGH | Low-level calls for wOETH/DepositAdapter | Fixed: typed interfaces |
+| 5 | Review | HIGH | realizeInterest() missing address(0) guard | Fixed |
+| 6 | Review | MEDIUM | WETH double-counting in swap loop | Fixed: returns balanceOf after all swaps |
+| 7 | Review | MEDIUM | _realizeInterest swallowed failures | Fixed: CAPInterestRealizeFailed event |
+| 8 | Review | MEDIUM | minOutputBps was dead code | Fixed: removed entirely |
+| 9 | Pashov | HIGH | Per-swap `amountOutMinimum: 0` allows sandwich within aggregate | Fixed: `minPerSwapOutputs[]` param (commit `a0f5e78`) |
+| 10 | Pashov | HIGH | oETH mint passes `0` minimum, unprotected by minWethOutput | Fixed: 0.1% tolerance check (commit `a0f5e78`) |
+
+## Git History
+
+| Commit | Description |
+|--------|-------------|
+| `266023b` | Initial repo scaffolding with Foundry and dependencies |
+| `fac62bf` | Add CAPAutoPounder contract, tests, and documentation |
+| `1400190` | Address PR review comments: off-chain keeper, typed interfaces, donation |
+| `a86c634` | Fix fork tests: setClaimer and vm.prank ordering |
+| `33d2413` | Update SPEC.md to reflect current state |
+| `c22499f` | Add minWethOutput quoter and YnDelegator address |
+| `35a2da6` | Update SPEC.md with action items |
+| `a0f5e78` | Fix audit findings: per-swap slippage and oETH mint protection |
