@@ -89,6 +89,10 @@ contract BaseIntegrationTest is Test {
         return ITokenStakingNodesManager(TOKEN_STAKING_NODES_MANAGER).getAllNodes();
     }
 
+    function _zeroMinOutputs() internal view returns (uint256[] memory) {
+        return new uint256[](autoPounder.getRewardTokenCount());
+    }
+
     function _setClaimerForAllNodes() internal {
         address[] memory nodes = _getStakingNodes();
         IRewardsCoordinator rc = IRewardsCoordinator(REWARDS_COORDINATOR);

@@ -27,6 +27,7 @@ import {
   tokenStakingNodesManagerAbi,
   rewardsCoordinatorAbi,
   autoPounderAbi,
+  autoPounderViewAbi,
   quoterV2Abi,
 } from "./abi.js";
 import { getLifetimeRewards, getClaimProof, type ClaimProof } from "./sidecar.js";
@@ -119,10 +120,11 @@ async function main() {
   console.log(`\nBuilt ${claims.length} claim proofs`);
 
   // 3. Estimate expected WETH output via Uniswap V3 QuoterV2
-  const expectedWeth = await quoteExpectedWethOutput(claims);
-  const minWethOutput = applySlippage(expectedWeth, SLIPPAGE_BPS);
-  console.log(`Expected WETH output: ${formatEther(expectedWeth)} ETH`);
+  const { totalExpected, perSwapMinOutputs } = await quoteExpectedWethOutput(claims);
+  const minWethOutput = applySlippage(totalExpected, SLIPPAGE_BPS);
+  console.log(`Expected WETH output: ${formatEther(totalExpected)} ETH`);
   console.log(`minWethOutput (${SLIPPAGE_BPS / 100}% slippage): ${formatEther(minWethOutput)} ETH`);
+  console.log(`Per-swap minimums: [${perSwapMinOutputs.map(v => formatEther(v)).join(", ")}]`);
 
   if (dryRun) {
     console.log("\n--- DRY RUN — not sending transaction ---");
@@ -130,6 +132,7 @@ async function main() {
     console.log(`  claims: ${claims.length} proofs`);
     console.log(`  shouldRealizeInterest: ${realizeInterest}`);
     console.log(`  minWethOutput: ${minWethOutput}`);
+    console.log(`  minPerSwapOutputs: [${perSwapMinOutputs.map(v => v.toString()).join(", ")}]`);
     return;
   }
 
@@ -147,7 +150,7 @@ async function main() {
     address: autoPounderAddress!,
     abi: autoPounderAbi,
     functionName: "compound",
-    args: [claims, realizeInterest, minWethOutput],
+    args: [claims, realizeInterest, minWethOutput, perSwapMinOutputs],
   });
 
   console.log(`Transaction sent: ${hash}`);
@@ -159,9 +162,12 @@ async function main() {
 /**
  * Quote expected WETH output for all reward tokens in the claims.
  * Uses Uniswap V3 QuoterV2 to simulate swaps with actual pool state.
- * WETH rewards are counted directly (no swap needed).
+ * Returns both total expected WETH and per-swap minimums (maps 1:1 to contract's rewardTokens).
  */
-async function quoteExpectedWethOutput(claims: any[]): Promise<bigint> {
+async function quoteExpectedWethOutput(claims: any[]): Promise<{
+  totalExpected: bigint;
+  perSwapMinOutputs: bigint[];
+}> {
   // Aggregate unclaimed amounts per token across all claims
   const tokenAmounts: Record<string, bigint> = {};
 
@@ -185,18 +191,43 @@ async function quoteExpectedWethOutput(claims: any[]): Promise<bigint> {
     }
   }
 
+  // Read contract's rewardTokens array to build per-swap minimums in the correct order
+  const rewardTokenCount = await publicClient.readContract({
+    address: autoPounderAddress!,
+    abi: autoPounderViewAbi,
+    functionName: "getRewardTokenCount",
+  });
+
+  const rewardTokens: string[] = [];
+  for (let i = 0; i < Number(rewardTokenCount); i++) {
+    const token = await publicClient.readContract({
+      address: autoPounderAddress!,
+      abi: autoPounderViewAbi,
+      functionName: "rewardTokens",
+      args: [BigInt(i)],
+    });
+    rewardTokens.push((token as string).toLowerCase());
+  }
+
   let totalExpectedWeth = 0n;
   const wethAddr = ADDRESSES.weth.toLowerCase();
+  const perSwapMinOutputs: bigint[] = new Array(rewardTokens.length).fill(0n);
 
-  for (const [token, amount] of Object.entries(tokenAmounts)) {
+  for (let i = 0; i < rewardTokens.length; i++) {
+    const token = rewardTokens[i];
+    const amount = tokenAmounts[token];
     const symbol = KNOWN_TOKENS[token] ?? token;
 
-    // WETH doesn't need swapping
+    // WETH doesn't need swapping — set per-swap minimum to 0
     if (token === wethAddr) {
-      console.log(`  ${symbol}: ${formatEther(amount)} (direct, no swap)`);
-      totalExpectedWeth += amount;
+      if (amount && amount > 0n) {
+        console.log(`  ${symbol}: ${formatEther(amount)} (direct, no swap)`);
+        totalExpectedWeth += amount;
+      }
       continue;
     }
+
+    if (!amount || amount === 0n) continue;
 
     const fee = SWAP_FEES[token];
     if (!fee) {
@@ -221,12 +252,14 @@ async function quoteExpectedWethOutput(claims: any[]): Promise<bigint> {
       const expectedOut = result[0];
       console.log(`  ${symbol}: ${formatEther(amount)} → ${formatEther(expectedOut)} WETH`);
       totalExpectedWeth += expectedOut;
+      // Apply per-swap slippage tolerance
+      perSwapMinOutputs[i] = applySlippage(expectedOut, SLIPPAGE_BPS);
     } catch (err) {
-      console.error(`  ${symbol}: quote failed, excluding from minWethOutput`);
+      console.error(`  ${symbol}: quote failed, excluding from minimums`);
     }
   }
 
-  return totalExpectedWeth;
+  return { totalExpected: totalExpectedWeth, perSwapMinOutputs };
 }
 
 /**

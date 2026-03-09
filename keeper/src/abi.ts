@@ -56,6 +56,7 @@ export const autoPounderAbi = [
       },
       { internalType: "bool", name: "shouldRealizeInterest", type: "bool" },
       { internalType: "uint256", name: "minWethOutput", type: "uint256" },
+      { internalType: "uint256[]", name: "minPerSwapOutputs", type: "uint256[]" },
     ],
     name: "compound",
     outputs: [],
@@ -88,6 +89,23 @@ export const quoterV2Abi = [
       { internalType: "uint256", name: "gasEstimate", type: "uint256" },
     ],
     stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const;
+
+export const autoPounderViewAbi = [
+  {
+    inputs: [],
+    name: "getRewardTokenCount",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    name: "rewardTokens",
+    outputs: [{ internalType: "address", name: "", type: "address" }],
+    stateMutability: "view",
     type: "function",
   },
 ] as const;

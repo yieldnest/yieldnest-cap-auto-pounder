@@ -57,9 +57,10 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         // Call compound with empty claims (tokens already deal'd)
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
 
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0);
+        autoPounder.compound(emptyClaims, false, 0, noMins);
 
         // Verify tokens were swapped — AutoPounder should have minimal residual
         assertEq(IERC20(EIGEN).balanceOf(address(autoPounder)), 0, "EIGEN should be swapped");
@@ -70,16 +71,14 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
     function test_CompoundIncreasesYnLSDeRate() public {
         deal(WETH, address(autoPounder), 10e18);
 
-        // Get rate before
-        // ynEigenViewer is deployed alongside ynLSDe
-        // For fork tests, we read the rate from the viewer
         uint256 totalAssetsBefore = _getYnLSDeTotalAssets();
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
 
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0);
+        autoPounder.compound(emptyClaims, false, 0, noMins);
 
         uint256 totalAssetsAfter = _getYnLSDeTotalAssets();
         assertGt(totalAssetsAfter, totalAssetsBefore, "totalAssets should increase after donation");
@@ -92,9 +91,10 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
 
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0);
+        autoPounder.compound(emptyClaims, false, 0, noMins);
 
         assertEq(IERC20(WETH).balanceOf(address(autoPounder)), 0, "WETH should be used");
 
@@ -105,10 +105,11 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
     function test_CompoundNoTokens() public {
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
 
         // Should not revert even with zero balances
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0);
+        autoPounder.compound(emptyClaims, false, 0, noMins);
     }
 
     function test_CompoundSlippageProtection() public {
@@ -116,17 +117,45 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
 
         // Should revert when minWethOutput exceeds actual WETH
-        vm.prank(compounder);
         vm.expectRevert(
             abi.encodeWithSelector(CAPAutoPounder.SlippageExceeded.selector, 1e18, 2e18)
         );
-        autoPounder.compound(emptyClaims, false, 2e18);
+        vm.prank(compounder);
+        autoPounder.compound(emptyClaims, false, 2e18, noMins);
 
         // Should succeed when minWethOutput is met
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 1e18);
+        autoPounder.compound(emptyClaims, false, 1e18, noMins);
+    }
+
+    function test_CompoundPerSwapSlippage() public {
+        deal(EIGEN, address(autoPounder), 100e18);
+
+        IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
+            new IRewardsCoordinator.RewardsMerkleClaim[](0);
+
+        // Build per-swap minimums with an impossibly high minimum for EIGEN (index 0)
+        uint256[] memory minOutputs = _zeroMinOutputs();
+        minOutputs[0] = type(uint256).max; // EIGEN swap can't possibly return this much
+
+        // Should revert because EIGEN swap output < minPerSwapOutputs[0]
+        vm.expectRevert(); // Uniswap router reverts with "Too little received"
+        vm.prank(compounder);
+        autoPounder.compound(emptyClaims, false, 0, minOutputs);
+    }
+
+    function test_CompoundMinPerSwapOutputsLengthMismatch() public {
+        IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
+            new IRewardsCoordinator.RewardsMerkleClaim[](0);
+
+        // Wrong length array should revert
+        uint256[] memory wrongLength = new uint256[](1);
+        vm.expectRevert(CAPAutoPounder.MinPerSwapOutputsLengthMismatch.selector);
+        vm.prank(compounder);
+        autoPounder.compound(emptyClaims, false, 0, wrongLength);
     }
 
     // ============================================
@@ -139,6 +168,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
         IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
             new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
 
         // Non-compounder should be rejected
         vm.expectRevert(
@@ -149,11 +179,11 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             )
         );
         vm.prank(nonCompounder);
-        autoPounder.compound(emptyClaims, false, 0);
+        autoPounder.compound(emptyClaims, false, 0, noMins);
 
         // Compounder should succeed
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0);
+        autoPounder.compound(emptyClaims, false, 0, noMins);
     }
 
     function test_RealizeInterestRequiresRole() public {

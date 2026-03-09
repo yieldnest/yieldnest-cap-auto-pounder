@@ -61,7 +61,9 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
     error InvalidDestination();
     error Unauthorized();
     error SlippageExceeded(uint256 actual, uint256 minimum);
+    error OETHMintSlippage(uint256 oethReceived, uint256 minExpected);
     error ArrayLengthMismatch();
+    error MinPerSwapOutputsLengthMismatch();
 
     // ============================================
     // Events
@@ -116,11 +118,13 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
      * @param claims EigenLayer merkle claims for each staking node earner
      * @param shouldRealizeInterest Whether to call realizeRestakerInterest on CAP first
      * @param minWethOutput Minimum total WETH expected after all swaps (keeper-calculated, anti-sandwich)
+     * @param minPerSwapOutputs Per-token minimum WETH output from each swap (maps 1:1 to rewardTokens array)
      */
     function compound(
         IRewardsCoordinator.RewardsMerkleClaim[] calldata claims,
         bool shouldRealizeInterest,
-        uint256 minWethOutput
+        uint256 minWethOutput,
+        uint256[] calldata minPerSwapOutputs
     ) external nonReentrant onlyRole(COMPOUNDER_ROLE) {
         // Step 1: Optionally realize CAP interest
         if (shouldRealizeInterest && address(capInterestContract) != address(0)) {
@@ -132,8 +136,8 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
             _claimRewards(claims);
         }
 
-        // Step 3: Swap all reward tokens to WETH
-        uint256 totalWeth = _swapAllRewardsToWeth();
+        // Step 3: Swap all reward tokens to WETH (with per-swap slippage protection)
+        uint256 totalWeth = _swapAllRewardsToWeth(minPerSwapOutputs);
 
         // Step 4: Enforce keeper-provided slippage check on total WETH output
         if (totalWeth < minWethOutput) {
@@ -227,9 +231,13 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
 
     /**
      * @dev Swap all reward token balances to WETH via Uniswap V3.
+     *      Uses per-swap minimums to prevent sandwich attacks on individual tokens.
      *      Returns the total WETH balance after all swaps (claimed + swapped).
+     * @param minPerSwapOutputs Per-token minimum output, maps 1:1 to rewardTokens array
      */
-    function _swapAllRewardsToWeth() internal returns (uint256) {
+    function _swapAllRewardsToWeth(uint256[] calldata minPerSwapOutputs) internal returns (uint256) {
+        if (minPerSwapOutputs.length != rewardTokens.length) revert MinPerSwapOutputsLengthMismatch();
+
         for (uint256 i = 0; i < rewardTokens.length; i++) {
             address token = rewardTokens[i];
 
@@ -251,7 +259,7 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
                 recipient: address(this),
                 deadline: block.timestamp,
                 amountIn: balance,
-                amountOutMinimum: 0, // Aggregate slippage enforced via compound()'s minWethOutput
+                amountOutMinimum: minPerSwapOutputs[i],
                 sqrtPriceLimitX96: 0
             });
 
@@ -267,15 +275,20 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
     /**
      * @dev Mint oETH from WETH via OETHVault, then wrap oETH into wOETH.
      *      WETH → OETHVault.mint() → oETH → wOETH.deposit() → wOETH
-     *      Slippage protection is handled at the compound() level via minWethOutput.
+     *      Includes 0.1% tolerance check on oETH mint (1:1 rate is a protocol invariant).
      */
     function _mintAndWrapToWoeth(uint256 wethAmount) internal returns (uint256) {
         // Mint oETH from WETH via OETHVault (1:1 rate)
         IERC20(weth).forceApprove(address(oethVault), wethAmount);
 
         uint256 oethBalanceBefore = IERC20(oeth).balanceOf(address(this));
-        oethVault.mint(weth, wethAmount, 0);
+        uint256 minOeth = wethAmount * 9990 / 10000; // 0.1% tolerance for rounding
+        oethVault.mint(weth, wethAmount, minOeth);
         uint256 oethReceived = IERC20(oeth).balanceOf(address(this)) - oethBalanceBefore;
+
+        if (oethReceived < minOeth) {
+            revert OETHMintSlippage(oethReceived, minOeth);
+        }
 
         emit OETHMinted(wethAmount, oethReceived);
 
