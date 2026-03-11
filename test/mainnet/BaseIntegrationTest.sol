@@ -93,6 +93,10 @@ contract BaseIntegrationTest is Test {
         return new uint256[](autoPounder.getRewardTokenCount());
     }
 
+    function _deadline() internal view returns (uint256) {
+        return block.timestamp + 300;
+    }
+
     function _setClaimerForAllNodes() internal {
         address[] memory nodes = _getStakingNodes();
         IRewardsCoordinator rc = IRewardsCoordinator(REWARDS_COORDINATOR);

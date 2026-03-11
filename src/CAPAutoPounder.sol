@@ -64,6 +64,7 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
     error OETHMintSlippage(uint256 oethReceived, uint256 minExpected);
     error ArrayLengthMismatch();
     error MinPerSwapOutputsLengthMismatch();
+    error DeadlineExpired();
 
     // ============================================
     // Events
@@ -119,13 +120,16 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
      * @param shouldRealizeInterest Whether to call realizeRestakerInterest on CAP first
      * @param minWethOutput Minimum total WETH expected after all swaps (keeper-calculated, anti-sandwich)
      * @param minPerSwapOutputs Per-token minimum WETH output from each swap (maps 1:1 to rewardTokens array)
+     * @param deadline Timestamp after which the transaction reverts (prevents stale mempool execution)
      */
     function compound(
         IRewardsCoordinator.RewardsMerkleClaim[] calldata claims,
         bool shouldRealizeInterest,
         uint256 minWethOutput,
-        uint256[] calldata minPerSwapOutputs
+        uint256[] calldata minPerSwapOutputs,
+        uint256 deadline
     ) external nonReentrant onlyRole(COMPOUNDER_ROLE) {
+        if (block.timestamp > deadline) revert DeadlineExpired();
         // Step 1: Optionally realize CAP interest
         if (shouldRealizeInterest && address(capInterestContract) != address(0)) {
             _realizeInterest();
@@ -137,7 +141,7 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
         }
 
         // Step 3: Swap all reward tokens to WETH (with per-swap slippage protection)
-        uint256 totalWeth = _swapAllRewardsToWeth(minPerSwapOutputs);
+        uint256 totalWeth = _swapAllRewardsToWeth(minPerSwapOutputs, deadline);
 
         // Step 4: Enforce keeper-provided slippage check on total WETH output
         if (totalWeth < minWethOutput) {
@@ -234,8 +238,9 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
      *      Uses per-swap minimums to prevent sandwich attacks on individual tokens.
      *      Returns the total WETH balance after all swaps (claimed + swapped).
      * @param minPerSwapOutputs Per-token minimum output, maps 1:1 to rewardTokens array
+     * @param deadline Timestamp deadline passed through to the swap router
      */
-    function _swapAllRewardsToWeth(uint256[] calldata minPerSwapOutputs) internal returns (uint256) {
+    function _swapAllRewardsToWeth(uint256[] calldata minPerSwapOutputs, uint256 deadline) internal returns (uint256) {
         if (minPerSwapOutputs.length != rewardTokens.length) revert MinPerSwapOutputsLengthMismatch();
 
         for (uint256 i = 0; i < rewardTokens.length; i++) {
@@ -257,7 +262,7 @@ contract CAPAutoPounder is AccessControlEnumerable, ReentrancyGuard {
                 tokenOut: weth,
                 fee: fee,
                 recipient: address(this),
-                deadline: block.timestamp,
+                deadline: deadline,
                 amountIn: balance,
                 amountOutMinimum: minPerSwapOutputs[i],
                 sqrtPriceLimitX96: 0

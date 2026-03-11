@@ -22,7 +22,7 @@ import {
 } from "viem";
 import { mainnet } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
-import { ADDRESSES, KNOWN_TOKENS, SWAP_FEES, SLIPPAGE_BPS } from "./config.js";
+import { ADDRESSES, KNOWN_TOKENS, SWAP_FEES, SLIPPAGE_BPS, DEADLINE_SECONDS } from "./config.js";
 import {
   tokenStakingNodesManagerAbi,
   rewardsCoordinatorAbi,
@@ -126,6 +126,8 @@ async function main() {
   console.log(`minWethOutput (${SLIPPAGE_BPS / 100}% slippage): ${formatEther(minWethOutput)} ETH`);
   console.log(`Per-swap minimums: [${perSwapMinOutputs.map(v => formatEther(v)).join(", ")}]`);
 
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
+
   if (dryRun) {
     console.log("\n--- DRY RUN — not sending transaction ---");
     console.log(`Would call compound() with:`);
@@ -133,6 +135,7 @@ async function main() {
     console.log(`  shouldRealizeInterest: ${realizeInterest}`);
     console.log(`  minWethOutput: ${minWethOutput}`);
     console.log(`  minPerSwapOutputs: [${perSwapMinOutputs.map(v => v.toString()).join(", ")}]`);
+    console.log(`  deadline: ${deadline} (${DEADLINE_SECONDS}s from now)`);
     return;
   }
 
@@ -150,7 +153,7 @@ async function main() {
     address: autoPounderAddress!,
     abi: autoPounderAbi,
     functionName: "compound",
-    args: [claims, realizeInterest, minWethOutput, perSwapMinOutputs],
+    args: [claims, realizeInterest, minWethOutput, perSwapMinOutputs, deadline],
   });
 
   console.log(`Transaction sent: ${hash}`);

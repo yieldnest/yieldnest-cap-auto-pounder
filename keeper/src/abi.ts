@@ -57,6 +57,7 @@ export const autoPounderAbi = [
       { internalType: "bool", name: "shouldRealizeInterest", type: "bool" },
       { internalType: "uint256", name: "minWethOutput", type: "uint256" },
       { internalType: "uint256[]", name: "minPerSwapOutputs", type: "uint256[]" },
+      { internalType: "uint256", name: "deadline", type: "uint256" },
     ],
     name: "compound",
     outputs: [],

@@ -60,7 +60,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         uint256[] memory noMins = _zeroMinOutputs();
 
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, noMins);
+        autoPounder.compound(emptyClaims, false, 0, noMins, _deadline());
 
         // Verify tokens were swapped — AutoPounder should have minimal residual
         assertEq(IERC20(EIGEN).balanceOf(address(autoPounder)), 0, "EIGEN should be swapped");
@@ -78,7 +78,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         uint256[] memory noMins = _zeroMinOutputs();
 
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, noMins);
+        autoPounder.compound(emptyClaims, false, 0, noMins, _deadline());
 
         uint256 totalAssetsAfter = _getYnLSDeTotalAssets();
         assertGt(totalAssetsAfter, totalAssetsBefore, "totalAssets should increase after donation");
@@ -94,7 +94,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         uint256[] memory noMins = _zeroMinOutputs();
 
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, noMins);
+        autoPounder.compound(emptyClaims, false, 0, noMins, _deadline());
 
         assertEq(IERC20(WETH).balanceOf(address(autoPounder)), 0, "WETH should be used");
 
@@ -109,7 +109,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
 
         // Should not revert even with zero balances
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, noMins);
+        autoPounder.compound(emptyClaims, false, 0, noMins, _deadline());
     }
 
     function test_CompoundSlippageProtection() public {
@@ -124,11 +124,11 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             abi.encodeWithSelector(CAPAutoPounder.SlippageExceeded.selector, 1e18, 2e18)
         );
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 2e18, noMins);
+        autoPounder.compound(emptyClaims, false, 2e18, noMins, _deadline());
 
         // Should succeed when minWethOutput is met
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 1e18, noMins);
+        autoPounder.compound(emptyClaims, false, 1e18, noMins, _deadline());
     }
 
     function test_CompoundPerSwapSlippage() public {
@@ -144,7 +144,18 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         // Should revert because EIGEN swap output < minPerSwapOutputs[0]
         vm.expectRevert(); // Uniswap router reverts with "Too little received"
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, minOutputs);
+        autoPounder.compound(emptyClaims, false, 0, minOutputs, _deadline());
+    }
+
+    function test_CompoundDeadlineExpired() public {
+        IRewardsCoordinator.RewardsMerkleClaim[] memory emptyClaims =
+            new IRewardsCoordinator.RewardsMerkleClaim[](0);
+        uint256[] memory noMins = _zeroMinOutputs();
+
+        // Should revert with expired deadline
+        vm.expectRevert(CAPAutoPounder.DeadlineExpired.selector);
+        vm.prank(compounder);
+        autoPounder.compound(emptyClaims, false, 0, noMins, block.timestamp - 1);
     }
 
     function test_CompoundMinPerSwapOutputsLengthMismatch() public {
@@ -155,7 +166,7 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
         uint256[] memory wrongLength = new uint256[](1);
         vm.expectRevert(CAPAutoPounder.MinPerSwapOutputsLengthMismatch.selector);
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, wrongLength);
+        autoPounder.compound(emptyClaims, false, 0, wrongLength, _deadline());
     }
 
     // ============================================
@@ -179,11 +190,11 @@ contract CompoundIntegrationTest is BaseIntegrationTest {
             )
         );
         vm.prank(nonCompounder);
-        autoPounder.compound(emptyClaims, false, 0, noMins);
+        autoPounder.compound(emptyClaims, false, 0, noMins, _deadline());
 
         // Compounder should succeed
         vm.prank(compounder);
-        autoPounder.compound(emptyClaims, false, 0, noMins);
+        autoPounder.compound(emptyClaims, false, 0, noMins, _deadline());
     }
 
     function test_RealizeInterestRequiresRole() public {

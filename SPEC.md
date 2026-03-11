@@ -14,17 +14,18 @@ Assigned by Dan Octavian. Reference implementation: [yieldnest-stakedao-auto-pou
 | Interfaces | DONE | IRewardsCoordinator, ISwapRouter, IOETHVaultCore, IERC4626, ICAPInterest, IRedemptionAssetsVault |
 | Mainnet addresses (`Contracts.sol`) | DONE | Dynamic staking nodes, all tokens sourced from EigenLayer Sidecar API |
 | Actor addresses (`Actors.sol`) | DONE | YnSecurityCouncil, YnDev, StrategyController, YnDelegator |
-| Fork integration tests | DONE | **20 tests passing** (18 original + 2 audit-fix tests) |
+| Fork integration tests | DONE | **21 tests passing** (18 original + 2 audit-fix + 1 deadline) |
 | Off-chain keeper (`keeper/`) | DONE | check-rewards.ts + compound.ts |
 | minWethOutput calculation | DONE | Uniswap V3 QuoterV2 + configurable slippage (default 2%) |
 | Per-swap slippage protection | DONE | `minPerSwapOutputs[]` param prevents individual sandwich attacks |
 | oETH mint slippage protection | DONE | 0.1% tolerance check on WETH→oETH conversion |
 | README documentation | DONE | Architecture, addresses, design decisions, audit history |
 | Security audit — Pashov | DONE | 2 findings at confidence 80, both fixed (commit `a0f5e78`) |
-| Security audit — all 15 pipelines | DONE | **0 Critical, 0 High, 1 Medium** (deadline). See `reports/mega-audit-report.md` |
-| Deploy script (`Deploy.s.sol`) | TODO | Forge Script for deterministic deployment |
-| Verifier script | TODO | Post-deploy config validation |
-| CI workflow update | TODO | Current CI uses `ci` profile (missing), needs `mainnet` fork tests |
+| Security audit — all 15 pipelines | DONE | **0 Critical, 0 High, 0 Medium** (deadline fixed). See `reports/mega-audit-report.md` |
+| Deadline parameter | DONE | `compound()` now accepts `deadline` param, passed to Uniswap swaps |
+| Deploy script (`Deploy.s.sol`) | DONE | Forge Script with full config |
+| Verifier script (`Verify.s.sol`) | DONE | Post-deploy config + claimer validation |
+| CI workflow | DONE | Unit tests (default) + fork tests (mainnet) + `forge fmt --check` |
 | `setClaimer()` coordination | TODO | Via YnDelegator Safe tx after deployment |
 | COMPOUNDER_ROLE grant | TODO | Grant to keeper wallet after deployment |
 | Keeper hosting | TODO | Digital Ocean cron job |
@@ -64,7 +65,7 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 ### Contract: `src/CAPAutoPounder.sol`
 
 **Entry Points (all require COMPOUNDER_ROLE):**
-- `compound(claims, shouldRealizeInterest, minWethOutput, minPerSwapOutputs)` — Full pipeline
+- `compound(claims, shouldRealizeInterest, minWethOutput, minPerSwapOutputs, deadline)` — Full pipeline
 - `claimOnly(claims)` — Claim rewards only
 - `realizeInterest()` — CAP interest only
 
@@ -91,7 +92,7 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 
 ### Tests: `test/mainnet/compound.spec.sol`
 
-20 fork tests — all passing (`FOUNDRY_PROFILE=mainnet ETH_MAINNET_RPC_URL=<rpc> forge test -vv`):
+21 fork tests — all passing (`FOUNDRY_PROFILE=mainnet ETH_MAINNET_RPC_URL=<rpc> forge test -vv`):
 
 | Test | What It Covers |
 |------|---------------|
@@ -113,6 +114,7 @@ Donation via `RedemptionAssetsVault.deposit()` increases ynLSDe's `totalAssets()
 | `test_ClaimOnly` | Empty claims works |
 | `test_ConstructorInvalidAdmin` | address(0) admin reverts |
 | `test_ConstructorArrayLengthMismatch` | Mismatched arrays revert |
+| `test_CompoundDeadlineExpired` | Expired deadline reverts |
 | `test_CompoundPerSwapSlippage` | Per-swap minimum reverts when not met |
 | `test_CompoundMinPerSwapOutputsLengthMismatch` | Wrong array length reverts |
 
@@ -195,9 +197,9 @@ Set up on Digital Ocean with cron job. Needs:
 ## Deployment Checklist
 
 - [x] **1a. Pashov audit** — Done, 2 findings fixed
-- [x] **1b. All 15 security scans complete** — No Critical/High. 1 MEDIUM (deadline). See `reports/mega-audit-report.md`
-- [ ] **2. Build deploy scripts** — Deploy.s.sol, Verifier
-- [ ] **3. Fix CI** — Update workflow to use correct profile, add fork test job
+- [x] **1b. All 15 security scans complete** — No Critical/High. Deadline finding fixed.
+- [x] **2. Deploy scripts** — `Deploy.s.sol` + `Verify.s.sol`
+- [x] **3. CI fixed** — Unit tests + fork tests + `forge fmt --check`
 - [ ] **4. Get ETH for deployment** — Dan sends to Saurabh's deploy address
 - [ ] **5. Deploy to mainnet** — `forge script script/Deploy.s.sol --broadcast --verify`
 - [ ] **6. Verify deployment** — `forge script script/Verify.s.sol`

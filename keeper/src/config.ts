@@ -31,6 +31,9 @@ export const SWAP_FEES: Record<string, number> = {
 // Default slippage tolerance for minWethOutput (2%)
 export const SLIPPAGE_BPS = Number(process.env.SLIPPAGE_BPS ?? "200");
 
+// Deadline buffer in seconds (default 5 minutes)
+export const DEADLINE_SECONDS = Number(process.env.DEADLINE_SECONDS ?? "300");
+
 // Known reward tokens for logging purposes
 export const KNOWN_TOKENS: Record<string, string> = {
   "0xec53bf9167f50cdeb3ae105f56099aaab9061f83": "EIGEN",
